@@ -211,57 +211,108 @@ export class ComfyUIClient {
     onProgress?: (progress: ComfyUIProgress) => void,
     onComplete?: (result: ComfyUIExecutionResult) => void
   ): Promise<string> {
-    // Ensure WebSocket is connected for progress updates
-    if (!this.ws && (onProgress || onComplete)) {
-      await this.connect()
-    }
+    console.log('🚀 ComfyUIClient.queuePrompt called')
+    console.log('📋 Workflow keys:', Object.keys(workflow))
+    console.log('🔗 Client ID:', this.clientId)
+    console.log('🌐 HTTP URL:', this.httpUrl)
 
-    const body = {
-      prompt: workflow,
-      client_id: this.clientId
-    }
+    try {
+      // Ensure WebSocket is connected for progress updates
+      if (!this.ws && (onProgress || onComplete)) {
+        console.log('🔌 Connecting to WebSocket...')
+        await this.connect()
+      }
 
-    const response = await fetch(`${this.httpUrl}/prompt`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(body)
-    })
+      const body = {
+        prompt: workflow,
+        client_id: this.clientId
+      }
 
-    if (!response.ok) {
-      const error = await response.text()
-      console.error('ComfyUI queue prompt failed:', {
-        status: response.status,
-        statusText: response.statusText,
-        error: error,
-        workflow: JSON.stringify(workflow, null, 2)
+      console.log('📤 Sending request to ComfyUI...')
+      console.log('📋 Body preview:', {
+        client_id: body.client_id,
+        prompt_keys: Object.keys(body.prompt),
+        sample_node: body.prompt['6'] // Show the text encode node
       })
-      throw new Error(`Failed to queue prompt: ${error}`)
+
+      const response = await fetch(`${this.httpUrl}/prompt`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+      })
+
+      console.log('📊 ComfyUI response status:', response.status, response.statusText)
+
+      if (!response.ok) {
+        const error = await response.text()
+        console.error('❌ ComfyUI queue prompt failed:', {
+          status: response.status,
+          statusText: response.statusText,
+          error: error,
+          url: `${this.httpUrl}/prompt`
+        })
+        // Log a sample of the workflow that failed
+        console.error('📋 Failed workflow sample:', JSON.stringify({
+          node_6: workflow['6'],
+          node_12: workflow['12'],
+          node_11: workflow['11']
+        }, null, 2))
+        throw new Error(`Failed to queue prompt: ${error}`)
+      }
+
+      const result: ComfyUIPromptResponse = await response.json()
+      console.log('📋 ComfyUI response data:', result)
+
+      // Check for node errors in the response
+      if (result.node_errors && Object.keys(result.node_errors).length > 0) {
+        console.error('❌ ComfyUI node errors detected:', result.node_errors)
+        throw new Error(`Workflow validation failed: ${JSON.stringify(result.node_errors, null, 2)}`)
+      }
+
+      console.log('✅ ComfyUI workflow queued successfully:', {
+        promptId: result.prompt_id,
+        number: result.number
+      })
+
+      // Verify the prompt was actually queued by checking ComfyUI immediately
+      console.log('🔍 Verifying prompt was queued...')
+      setTimeout(async () => {
+        try {
+          const historyCheck = await fetch(`${this.httpUrl}/history/${result.prompt_id}`)
+          if (historyCheck.ok) {
+            const history = await historyCheck.json()
+            if (history[result.prompt_id]) {
+              console.log('✅ Confirmed: Prompt found in ComfyUI history')
+            } else {
+              console.log('⚠️  Warning: Prompt not found in ComfyUI history immediately')
+            }
+          }
+        } catch (e) {
+          console.log('❌ Failed to verify prompt in history:', e)
+        }
+      }, 1000) // Check after 1 second
+
+      // Register callbacks
+      if (onProgress) {
+        this.progressCallbacks.set(result.prompt_id, onProgress)
+      }
+      if (onComplete) {
+        this.completionCallbacks.set(result.prompt_id, onComplete)
+      }
+
+      return result.prompt_id
+      
+    } catch (error) {
+      console.error('❌ Exception in queuePrompt:', error)
+      console.error('📊 Error details:', {
+        name: error.name,
+        message: error.message,
+        stack: error.stack?.substring(0, 500) + '...' // Truncate stack trace
+      })
+      throw error // Re-throw the error
     }
-
-    const result: ComfyUIPromptResponse = await response.json()
-
-    // Check for node errors in the response
-    if (result.node_errors && Object.keys(result.node_errors).length > 0) {
-      console.error('ComfyUI node errors detected:', result.node_errors)
-      throw new Error(`Workflow validation failed: ${JSON.stringify(result.node_errors, null, 2)}`)
-    }
-
-    console.log('ComfyUI workflow queued successfully:', {
-      promptId: result.prompt_id,
-      number: result.number
-    })
-
-    // Register callbacks
-    if (onProgress) {
-      this.progressCallbacks.set(result.prompt_id, onProgress)
-    }
-    if (onComplete) {
-      this.completionCallbacks.set(result.prompt_id, onComplete)
-    }
-
-    return result.prompt_id
   }
 
   /**
