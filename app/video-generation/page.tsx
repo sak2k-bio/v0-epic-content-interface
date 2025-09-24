@@ -1,5 +1,5 @@
 "use client"
-import { useState } from "react"
+import React, { useState } from "react"
 import type React from "react"
 
 import { Button } from "@/components/ui/button"
@@ -35,30 +35,116 @@ export default function VideoGenerationPage() {
   const [prompt, setPrompt] = useState("")
   const [negativePrompt, setNegativePrompt] = useState("")
   const [isGenerating, setIsGenerating] = useState(false)
-  const [generatedVideos, setGeneratedVideos] = useState<string[]>([])
-  const [selectedModel, setSelectedModel] = useState("runway-gen2")
+  const [generatedVideos, setGeneratedVideos] = useState<Array<{filename: string, dataUrl: string, isGif?: boolean}>>([])
+  const [selectedModel, setSelectedModel] = useState("stable-video")
   const [duration, setDuration] = useState([4])
-  const [fps, setFps] = useState([24])
-  const [resolution, setResolution] = useState("1024x576")
+  const [fps, setFps] = useState([8])
+  const [resolution, setResolution] = useState("512x512")
+  const [frames, setFrames] = useState([16])
   const [motionStrength, setMotionStrength] = useState([5])
   const [seedImage, setSeedImage] = useState<string | null>(null)
   const [useAudio, setUseAudio] = useState(false)
   const [audioPrompt, setAudioPrompt] = useState("")
+  const [currentPromptId, setCurrentPromptId] = useState<string | null>(null)
+  const [comfyUIStatus, setComfyUIStatus] = useState<'checking' | 'running' | 'stopped'>('checking')
+  const [workflowType, setWorkflowType] = useState<'wan22' | 'wan22-simple' | 'animatediff'>('wan22')
+  const [loraStrength, setLoraStrength] = useState([1.0])
 
   const handleGenerate = async () => {
     if (!prompt.trim()) return
 
     setIsGenerating(true)
-    // Simulate API call
-    setTimeout(() => {
-      const newVideos = [
-        `/placeholder.svg?height=576&width=1024&query=${encodeURIComponent("Video: " + prompt)}`,
-        `/placeholder.svg?height=576&width=1024&query=${encodeURIComponent("Video: " + prompt + " alt version")}`,
-      ]
-      setGeneratedVideos(newVideos)
+    setGeneratedVideos([])
+
+    try {
+      // Start video generation
+      const response = await fetch('/api/generate/video', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          prompt,
+          negativePrompt,
+          frames: frames[0],
+          fps: fps[0],
+          steps: workflowType.startsWith('wan22') ? 4 : 25,
+          cfgScale: workflowType.startsWith('wan22') ? 5.0 : 7.5,
+          aspectRatio: resolution === '512x512' ? '1:1' : '16:9',
+          sampler: 'euler',
+          scheduler: workflowType.startsWith('wan22') ? 'simple' : 'karras',
+          workflow: workflowType,
+          loraStrength: loraStrength[0]
+        })
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to start video generation')
+      }
+
+      const result = await response.json()
+      setCurrentPromptId(result.promptId)
+
+      // Poll for results
+      pollForResults(result.promptId)
+    } catch (error) {
+      console.error('Video generation failed:', error)
       setIsGenerating(false)
-    }, 8000)
+    }
   }
+
+  const pollForResults = async (promptId: string) => {
+    const pollInterval = setInterval(async () => {
+      try {
+        const response = await fetch(`/api/generate/video?promptId=${promptId}`)
+        if (!response.ok) throw new Error('Failed to check status')
+
+        const result = await response.json()
+
+        if (result.status === 'completed') {
+          setGeneratedVideos(result.videos || [])
+          setIsGenerating(false)
+          setCurrentPromptId(null)
+          clearInterval(pollInterval)
+        } else if (result.status === 'error') {
+          console.error('Video generation error:', result.error)
+          setIsGenerating(false)
+          setCurrentPromptId(null)
+          clearInterval(pollInterval)
+        }
+        // Continue polling if still processing
+      } catch (error) {
+        console.error('Polling error:', error)
+        setIsGenerating(false)
+        setCurrentPromptId(null)
+        clearInterval(pollInterval)
+      }
+    }, 3000) // Poll every 3 seconds for video (slower than images)
+  }
+
+  // Check ComfyUI status on mount
+  React.useEffect(() => {
+    const checkComfyUIStatus = async () => {
+      try {
+        const response = await fetch('/api/generate/video', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: 'test' })
+        })
+        
+        if (response.status === 503) {
+          setComfyUIStatus('stopped')
+        } else {
+          setComfyUIStatus('running')
+        }
+      } catch {
+        setComfyUIStatus('stopped')
+      }
+    }
+
+    checkComfyUIStatus()
+  }, [])
 
   const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -95,6 +181,17 @@ export default function VideoGenerationPage() {
             </div>
 
             <div className="flex items-center gap-2">
+              <Badge 
+                variant={comfyUIStatus === 'running' ? 'default' : 'destructive'} 
+                className="gap-1"
+              >
+                <div className={`w-2 h-2 rounded-full ${
+                  comfyUIStatus === 'running' ? 'bg-green-500' : 
+                  comfyUIStatus === 'stopped' ? 'bg-red-500' : 'bg-yellow-500'
+                }`} />
+                ComfyUI {comfyUIStatus === 'running' ? 'Connected' : 
+                        comfyUIStatus === 'stopped' ? 'Offline' : 'Checking...'}
+              </Badge>
               <Badge variant="secondary" className="gap-1">
                 <FilmIcon className="w-3 h-3" />
                 {selectedModel.toUpperCase()}
@@ -146,16 +243,30 @@ export default function VideoGenerationPage() {
 
                 <div className="space-y-4">
                   <div className="space-y-2">
+                    <Label>Workflow Type</Label>
+                    <Select value={workflowType} onValueChange={(value: 'wan22' | 'wan22-simple' | 'animatediff') => setWorkflowType(value)}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="wan22">WAN 2.2 (High Quality)</SelectItem>
+                        <SelectItem value="wan22-simple">WAN 2.2 Simple (Fast)</SelectItem>
+                        <SelectItem value="animatediff">AnimateDiff (Classic)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-2">
                     <Label>AI Model</Label>
                     <Select value={selectedModel} onValueChange={setSelectedModel}>
                       <SelectTrigger>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="runway-gen2">Runway Gen-2 (Online)</SelectItem>
-                        <SelectItem value="pika-labs">Pika Labs (Online)</SelectItem>
-                        <SelectItem value="stable-video">Stable Video Diffusion (Local)</SelectItem>
-                        <SelectItem value="zeroscope">Zeroscope (Local)</SelectItem>
+                        <SelectItem value="stable-video">Stable Video Diffusion (ComfyUI)</SelectItem>
+                        <SelectItem value="animatediff">AnimateDiff (ComfyUI)</SelectItem>
+                        <SelectItem value="zeroscope">Zeroscope (ComfyUI)</SelectItem>
+                        <SelectItem value="custom">Custom Model (ComfyUI)</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -188,7 +299,15 @@ export default function VideoGenerationPage() {
                       <Label>Frame Rate (FPS)</Label>
                       <span className="text-sm text-muted-foreground">{fps[0]}</span>
                     </div>
-                    <Slider value={fps} onValueChange={setFps} max={60} min={12} step={6} className="w-full" />
+                    <Slider value={fps} onValueChange={setFps} max={30} min={6} step={2} className="w-full" />
+                  </div>
+
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <Label>Frame Count</Label>
+                      <span className="text-sm text-muted-foreground">{frames[0]}</span>
+                    </div>
+                    <Slider value={frames} onValueChange={setFrames} max={32} min={8} step={8} className="w-full" />
                   </div>
 
                   <div className="space-y-3">
@@ -205,6 +324,23 @@ export default function VideoGenerationPage() {
                       className="w-full"
                     />
                   </div>
+
+                  {workflowType.startsWith('wan22') && (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <Label>LoRA Strength</Label>
+                        <span className="text-sm text-muted-foreground">{loraStrength[0].toFixed(2)}</span>
+                      </div>
+                      <Slider
+                        value={loraStrength}
+                        onValueChange={setLoraStrength}
+                        max={2.0}
+                        min={0.1}
+                        step={0.1}
+                        className="w-full"
+                      />
+                    </div>
+                  )}
                 </div>
 
                 <Separator />
@@ -262,14 +398,19 @@ export default function VideoGenerationPage() {
 
                 <Button
                   onClick={handleGenerate}
-                  disabled={!prompt.trim() || isGenerating}
+                  disabled={!prompt.trim() || isGenerating || comfyUIStatus !== 'running'}
                   className="w-full gap-2"
                   size="lg"
                 >
                   {isGenerating ? (
                     <>
                       <RefreshCwIcon className="w-4 h-4 animate-spin" />
-                      Generating...
+                      Generating with ComfyUI...
+                    </>
+                  ) : comfyUIStatus !== 'running' ? (
+                    <>
+                      <SparklesIcon className="w-4 h-4" />
+                      ComfyUI Not Running
                     </>
                   ) : (
                     <>
@@ -337,7 +478,7 @@ export default function VideoGenerationPage() {
                   <div className="space-y-6">
                     <div className="grid grid-cols-1 gap-6">
                       {generatedVideos.map((video, index) => (
-                        <VideoPlayer key={index} src={video} index={index} />
+                        <VideoPlayer key={index} src={video.dataUrl} filename={video.filename} index={index} isGif={video.isGif} />
                       ))}
                     </div>
 
@@ -379,7 +520,7 @@ export default function VideoGenerationPage() {
   )
 }
 
-function VideoPlayer({ src, index }: { src: string; index: number }) {
+function VideoPlayer({ src, filename, index, isGif }: { src: string; filename: string; index: number; isGif?: boolean }) {
   const [isPlaying, setIsPlaying] = useState(false)
   const [isMuted, setIsMuted] = useState(true)
 
@@ -421,7 +562,19 @@ function VideoPlayer({ src, index }: { src: string; index: number }) {
               <span className="text-white text-sm">0:00 / {4}:00</span>
             </div>
             <div className="flex items-center gap-2">
-              <Button size="sm" variant="ghost" className="text-white hover:bg-white/20 gap-1">
+              <Button 
+                size="sm" 
+                variant="ghost" 
+                className="text-white hover:bg-white/20 gap-1"
+                onClick={() => {
+                  const link = document.createElement('a')
+                  link.href = src
+                  link.download = filename
+                  document.body.appendChild(link)
+                  link.click()
+                  document.body.removeChild(link)
+                }}
+              >
                 <DownloadIcon className="w-3 h-3" />
                 Download
               </Button>
