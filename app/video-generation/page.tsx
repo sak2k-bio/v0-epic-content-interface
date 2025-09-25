@@ -521,70 +521,70 @@ export default function VideoGenerationPage() {
 }
 
 function VideoPlayer({ src, filename, index, isGif }: { src: string; filename: string; index: number; isGif?: boolean }) {
-  const [isPlaying, setIsPlaying] = useState(false)
-  const [isMuted, setIsMuted] = useState(true)
+  const videoRef = React.useRef<HTMLVideoElement>(null)
+  const [showControls, setShowControls] = useState(false)
 
   return (
     <div className="group relative bg-muted rounded-lg overflow-hidden">
       <div className="aspect-video bg-muted flex items-center justify-center">
-        <img
-          src={src || "/placeholder.svg"}
-          alt={`Generated video ${index + 1}`}
-          className="w-full h-full object-cover"
-        />
+        {isGif ? (
+          <img
+            src={src || "/placeholder.svg"}
+            alt={`Generated video ${index + 1}`}
+            className="w-full h-full object-cover"
+          />
+        ) : (
+          <video
+            ref={videoRef}
+            src={src}
+            className="w-full h-full object-cover"
+            controls
+            preload="metadata"
+            onMouseEnter={() => setShowControls(true)}
+            onMouseLeave={() => setShowControls(false)}
+          >
+            Your browser does not support the video tag.
+          </video>
+        )}
 
-        {/* Video Controls Overlay */}
-        <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-          <div className="flex items-center gap-4">
-            <Button
-              size="lg"
-              variant="secondary"
-              className="rounded-full w-12 h-12 p-0"
-              onClick={() => setIsPlaying(!isPlaying)}
+        {/* Action buttons overlay - only shows on hover and doesn't interfere with video controls */}
+        {!isGif && showControls && (
+          <div className="absolute top-4 right-4 flex items-center gap-2">
+            <Button 
+              size="sm" 
+              variant="secondary" 
+              className="gap-1 bg-black/50 text-white hover:bg-black/70 backdrop-blur-sm"
+              onClick={() => {
+                const link = document.createElement('a')
+                link.href = src
+                link.download = filename
+                document.body.appendChild(link)
+                link.click()
+                document.body.removeChild(link)
+              }}
             >
-              {isPlaying ? <PauseIcon className="w-6 h-6" /> : <PlayIcon className="w-6 h-6" />}
+              <DownloadIcon className="w-3 h-3" />
+              Download
+            </Button>
+            <Button 
+              size="sm" 
+              variant="secondary" 
+              className="gap-1 bg-black/50 text-white hover:bg-black/70 backdrop-blur-sm"
+            >
+              <ShareIcon className="w-3 h-3" />
+              Share
             </Button>
           </div>
-        </div>
-
-        {/* Bottom Controls */}
-        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-4 opacity-0 group-hover:opacity-100 transition-opacity">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Button
-                size="sm"
-                variant="ghost"
-                className="text-white hover:bg-white/20"
-                onClick={() => setIsMuted(!isMuted)}
-              >
-                {isMuted ? <VolumeXIcon className="w-4 h-4" /> : <Volume2Icon className="w-4 h-4" />}
-              </Button>
-              <span className="text-white text-sm">0:00 / {4}:00</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button 
-                size="sm" 
-                variant="ghost" 
-                className="text-white hover:bg-white/20 gap-1"
-                onClick={() => {
-                  const link = document.createElement('a')
-                  link.href = src
-                  link.download = filename
-                  document.body.appendChild(link)
-                  link.click()
-                  document.body.removeChild(link)
-                }}
-              >
-                <DownloadIcon className="w-3 h-3" />
-                Download
-              </Button>
-              <Button size="sm" variant="ghost" className="text-white hover:bg-white/20 gap-1">
-                <ShareIcon className="w-3 h-3" />
-                Share
-              </Button>
+        )}
+        
+        {/* Video info overlay */}
+        {!isGif && showControls && (
+          <div className="absolute top-4 left-4">
+            <div className="bg-black/50 text-white px-2 py-1 rounded text-xs backdrop-blur-sm">
+              {filename}
             </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   )

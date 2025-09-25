@@ -31,7 +31,7 @@ export function createWAN22VideoWorkflow(params: WAN22VideoParams): ComfyUIWorkf
     highNoiseModel = 'Wan2.2\\wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors',
     lowNoiseModel = 'Wan2.2\\wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors',
     clipModel = 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
-    vaeModel = 'wan_2_1_vae.safetensors',
+    vaeModel = 'wan_2.1_vae.safetensors',
     loraModel = 'wan2_2_t2v_lightx2v_4steps_lora.safetensors',
     loraStrength = 1.00,
     width = 512,
@@ -44,198 +44,137 @@ export function createWAN22VideoWorkflow(params: WAN22VideoParams): ComfyUIWorkf
     scheduler = 'simple'
   } = params
 
+  // Complete WAN 2.2 video workflow
   const workflow: ComfyUIWorkflow = {
-    // Step 1 - Load Models
+    // Load UNET model
     '1': {
       inputs: {
-        ckpt_name: highNoiseModel,
+        unet_name: highNoiseModel,
         weight_dtype: 'default'
       },
-      class_type: 'Load Diffusion Model',
+      class_type: 'UNETLoader',
       _meta: {
-        title: 'Load Diffusion Model (High Noise)'
+        title: 'Load UNET Model'
       }
     },
+    
+    // Load CLIP
     '2': {
       inputs: {
-        ckpt_name: lowNoiseModel,
-        weight_dtype: 'default'
+        clip_name: clipModel,
+        type: 'wan'
       },
-      class_type: 'Load Diffusion Model',
-      _meta: {
-        title: 'Load Diffusion Model (Low Noise)'
-      }
-    },
-    '3': {
-      inputs: {
-        clip: clipModel,
-        type: 'wan',
-        device: 'default'
-      },
-      class_type: 'Load CLIP',
+      class_type: 'CLIPLoader',
       _meta: {
         title: 'Load CLIP'
       }
     },
-    '4': {
+    
+    // Load VAE
+    '3': {
       inputs: {
         vae_name: vaeModel
       },
-      class_type: 'Load VAE',
+      class_type: 'VAELoader',
       _meta: {
         title: 'Load VAE'
       }
     },
     
-    // LoRA Loaders
+    // Positive prompt encoding
+    '4': {
+      inputs: {
+        text: prompt,
+        clip: ['2', 0]
+      },
+      class_type: 'CLIPTextEncode',
+      _meta: {
+        title: 'Positive Prompt'
+      }
+    },
+    
+    // Negative prompt encoding
     '5': {
       inputs: {
-        model: ['1', 0], // High noise model
-        lora_name: loraModel,
-        strength_model: loraStrength,
-        strength_clip: loraStrength
+        text: negativePrompt,
+        clip: ['2', 0]
       },
-      class_type: 'LoraLoader',
+      class_type: 'CLIPTextEncode',
       _meta: {
-        title: 'LoraLoader (High Noise)'
+        title: 'Negative Prompt'
       }
     },
+    
+    // Create video latent
     '6': {
       inputs: {
-        model: ['2', 0], // Low noise model
-        lora_name: loraModel,
-        strength_model: loraStrength,
-        strength_clip: loraStrength
-      },
-      class_type: 'LoraLoader',
-      _meta: {
-        title: 'LoraLoader (Low Noise)'
-      }
-    },
-
-    // Model Sampling nodes
-    '7': {
-      inputs: {
-        model: ['5', 0],
-        shift: 5.00
-      },
-      class_type: 'ModelSamplingSD3',
-      _meta: {
-        title: 'ModelSamplingSD3 (High Noise)'
-      }
-    },
-    '8': {
-      inputs: {
-        model: ['6', 0],
-        shift: 5.00
-      },
-      class_type: 'ModelSamplingSD3',
-      _meta: {
-        title: 'ModelSamplingSD3 (Low Noise)'
-      }
-    },
-
-    // Step 2 - Video size (Empty Latent Video)
-    '9': {
-      inputs: {
-        width,
-        height,
+        vae: ['3', 0],
+        width: width,
+        height: height,
         length: frames,
         batch_size: 1
       },
-      class_type: 'EmptyLatentVideo',
+      class_type: 'Wan22ImageToVideoLatent',
       _meta: {
-        title: 'Empty Latent Video'
+        title: 'Video Latent'
       }
     },
-
-    // Step 3 - Prompt encoding
-    '10': {
+    
+    // Sample
+    '7': {
       inputs: {
-        text: prompt,
-        clip: ['3', 0]
-      },
-      class_type: 'CLIPTextEncode',
-      _meta: {
-        title: 'CLIP Text Encode (Positive Prompt)'
-      }
-    },
-    '11': {
-      inputs: {
-        text: negativePrompt,
-        clip: ['3', 0]
-      },
-      class_type: 'CLIPTextEncode',
-      _meta: {
-        title: 'CLIP Text Encode (Negative Prompt)'
-      }
-    },
-
-    // Sampling nodes (High noise first, then low noise)
-    '12': {
-      inputs: {
-        seed,
-        steps: Math.ceil(steps * 0.7), // 70% of steps for high noise
+        seed: seed,
+        steps: steps,
         cfg: cfgScale,
         sampler_name: sampler,
-        scheduler,
+        scheduler: scheduler,
         denoise: 1.0,
-        model: ['7', 0],
-        positive: ['10', 0],
-        negative: ['11', 0],
-        latent_image: ['9', 0]
+        model: ['1', 0],
+        positive: ['4', 0],
+        negative: ['5', 0],
+        latent_image: ['6', 0]
       },
       class_type: 'KSampler',
       _meta: {
-        title: 'KSampler (High Noise)'
+        title: 'Sample'
       }
     },
-    '13': {
+    
+    // Decode VAE
+    '8': {
       inputs: {
-        seed,
-        steps: Math.floor(steps * 0.3), // 30% of steps for low noise
-        cfg: cfgScale,
-        sampler_name: sampler,
-        scheduler,
-        denoise: 0.5, // Lower denoise for refinement
-        model: ['8', 0],
-        positive: ['10', 0],
-        negative: ['11', 0],
-        latent_image: ['12', 0] // Use output from high noise sampler
-      },
-      class_type: 'KSampler',
-      _meta: {
-        title: 'KSampler (Low Noise Refinement)'
-      }
-    },
-
-    // VAE Decode
-    '14': {
-      inputs: {
-        samples: ['13', 0],
-        vae: ['4', 0]
+        samples: ['7', 0],
+        vae: ['3', 0]
       },
       class_type: 'VAEDecode',
       _meta: {
-        title: 'VAE Decode'
+        title: 'Decode'
       }
     },
-
-    // Video Combine
-    '15': {
+    
+    // Create video from images
+    '9': {
       inputs: {
-        images: ['14', 0],
-        fps: 8,
-        method: 'default',
-        filename_prefix: 'WAN22_video',
-        format: 'video/mp4',
-        codec: 'libx264',
-        crf: 22,
-        save_output: true
+        images: ['8', 0],
+        fps: 8
       },
-      class_type: 'VHS_VideoCombine',
+      class_type: 'CreateVideo',
       _meta: {
-        title: 'Video Combine'
+        title: 'Create Video'
+      }
+    },
+    
+    // Save video
+    '10': {
+      inputs: {
+        video: ['9', 0],
+        filename_prefix: 'WAN_video',
+        format: 'auto',
+        codec: 'auto'
+      },
+      class_type: 'SaveVideo',
+      _meta: {
+        title: 'Save Video'
       }
     }
   }
@@ -243,168 +182,145 @@ export function createWAN22VideoWorkflow(params: WAN22VideoParams): ComfyUIWorkf
   return workflow
 }
 
-// Alternative simplified WAN 2.2 workflow for faster generation
+// Simplified WAN 2.2 workflow for faster generation
 export function createWAN22VideoSimpleWorkflow(params: WAN22VideoParams): ComfyUIWorkflow {
   const {
     prompt,
     negativePrompt = '',
-    highNoiseModel = 'Wan2.2\\wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors',
-    clipModel = 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
-    vaeModel = 'wan_2_1_vae.safetensors',
-    loraModel = 'wan2_2_t2v_lightx2v_4steps_lora.safetensors',
-    loraStrength = 1.00,
     width = 512,
     height = 512,
-    frames = 25,
-    steps = 4,
-    cfgScale = 5.0,
-    seed = Math.floor(Math.random() * 4294967295),
-    sampler = 'euler',
-    scheduler = 'simple'
+    frames = 16,
+    steps = 2,
+    cfgScale = 3.0,
+    seed = Math.floor(Math.random() * 4294967295)
   } = params
 
+  // Simplified WAN 2.2 workflow with basic settings
   const workflow: ComfyUIWorkflow = {
-    // Load single model (high noise)
+    // Load basic models
     '1': {
       inputs: {
-        ckpt_name: highNoiseModel,
+        unet_name: 'Wan2.2\\wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors',
         weight_dtype: 'default'
       },
-      class_type: 'Load Diffusion Model',
+      class_type: 'UNETLoader',
       _meta: {
-        title: 'Load Diffusion Model'
+        title: 'Load UNET'
       }
     },
+    
     '2': {
       inputs: {
-        clip: clipModel,
-        type: 'wan',
-        device: 'default'
+        clip_name: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
+        type: 'wan'
       },
-      class_type: 'Load CLIP',
+      class_type: 'CLIPLoader',
       _meta: {
         title: 'Load CLIP'
       }
     },
+    
     '3': {
       inputs: {
-        vae_name: vaeModel
+        vae_name: 'wan_2.1_vae.safetensors'
       },
-      class_type: 'Load VAE',
+      class_type: 'VAELoader',
       _meta: {
         title: 'Load VAE'
       }
     },
     
-    // LoRA Loader
+    // Text encoding
     '4': {
-      inputs: {
-        model: ['1', 0],
-        lora_name: loraModel,
-        strength_model: loraStrength,
-        strength_clip: loraStrength
-      },
-      class_type: 'LoraLoader',
-      _meta: {
-        title: 'LoraLoader'
-      }
-    },
-
-    // Model Sampling
-    '5': {
-      inputs: {
-        model: ['4', 0],
-        shift: 5.00
-      },
-      class_type: 'ModelSamplingSD3',
-      _meta: {
-        title: 'ModelSamplingSD3'
-      }
-    },
-
-    // Video size
-    '6': {
-      inputs: {
-        width,
-        height,
-        length: frames,
-        batch_size: 1
-      },
-      class_type: 'EmptyLatentVideo',
-      _meta: {
-        title: 'Empty Latent Video'
-      }
-    },
-
-    // Prompt encoding
-    '7': {
       inputs: {
         text: prompt,
         clip: ['2', 0]
       },
       class_type: 'CLIPTextEncode',
       _meta: {
-        title: 'CLIP Text Encode (Positive)'
+        title: 'Positive'
       }
     },
-    '8': {
+    
+    '5': {
       inputs: {
-        text: negativePrompt,
+        text: negativePrompt || '',
         clip: ['2', 0]
       },
       class_type: 'CLIPTextEncode',
       _meta: {
-        title: 'CLIP Text Encode (Negative)'
+        title: 'Negative'
       }
     },
-
-    // Sampling
-    '9': {
+    
+    // Video latent
+    '6': {
       inputs: {
-        seed,
-        steps,
+        vae: ['3', 0],
+        width: width,
+        height: height,
+        length: frames,
+        batch_size: 1
+      },
+      class_type: 'Wan22ImageToVideoLatent',
+      _meta: {
+        title: 'Video Latent'
+      }
+    },
+    
+    // Simple sampling
+    '7': {
+      inputs: {
+        seed: seed,
+        steps: steps,
         cfg: cfgScale,
-        sampler_name: sampler,
-        scheduler,
+        sampler_name: 'euler',
+        scheduler: 'simple',
         denoise: 1.0,
-        model: ['5', 0],
-        positive: ['7', 0],
-        negative: ['8', 0],
+        model: ['1', 0],
+        positive: ['4', 0],
+        negative: ['5', 0],
         latent_image: ['6', 0]
       },
       class_type: 'KSampler',
       _meta: {
-        title: 'KSampler'
+        title: 'Sample'
       }
     },
-
-    // VAE Decode
-    '10': {
+    
+    // Decode and save
+    '8': {
       inputs: {
-        samples: ['9', 0],
+        samples: ['7', 0],
         vae: ['3', 0]
       },
       class_type: 'VAEDecode',
       _meta: {
-        title: 'VAE Decode'
+        title: 'Decode'
       }
     },
-
-    // Video Combine
-    '11': {
+    
+    '9': {
       inputs: {
-        images: ['10', 0],
-        fps: 8,
-        method: 'default',
-        filename_prefix: 'WAN22_simple_video',
-        format: 'video/mp4',
-        codec: 'libx264',
-        crf: 22,
-        save_output: true
+        images: ['8', 0],
+        fps: 8
       },
-      class_type: 'VHS_VideoCombine',
+      class_type: 'CreateVideo',
       _meta: {
-        title: 'Video Combine'
+        title: 'Create Video'
+      }
+    },
+    
+    '10': {
+      inputs: {
+        video: ['9', 0],
+        filename_prefix: 'WAN_simple_video',
+        format: 'auto',
+        codec: 'auto'
+      },
+      class_type: 'SaveVideo',
+      _meta: {
+        title: 'Save Video'
       }
     }
   }

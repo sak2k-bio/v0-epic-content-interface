@@ -348,16 +348,38 @@ export class ComfyUIClient {
    * Get generated image/video data
    */
   async getOutput(filename: string, subfolder: string = '', type: string = 'output'): Promise<Blob> {
+    console.log('🎬 getOutput called with:', { filename, subfolder, type })
+    
     const params = new URLSearchParams({
       filename,
       subfolder,
       type
     })
 
-    const response = await fetch(`${this.httpUrl}/view?${params}`)
-    if (!response.ok) throw new Error('Failed to get output')
+    const url = `${this.httpUrl}/view?${params}`
+    console.log('🌐 Fetching from URL:', url)
+    
+    const response = await fetch(url)
+    console.log('📊 getOutput response status:', response.status, response.statusText)
+    
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error('❌ getOutput failed:', {
+        status: response.status,
+        statusText: response.statusText,
+        url,
+        error: errorText
+      })
+      throw new Error(`Failed to get output: ${response.status} ${response.statusText} - ${errorText}`)
+    }
 
-    return response.blob()
+    const blob = await response.blob()
+    console.log('📦 Retrieved blob:', {
+      size: blob.size,
+      type: blob.type
+    })
+    
+    return blob
   }
 
   /**

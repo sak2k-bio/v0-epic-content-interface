@@ -64,7 +64,7 @@ export async function POST(request: NextRequest) {
         highNoiseModel: highNoiseModel || 'Wan2.2\\wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors',
         lowNoiseModel: lowNoiseModel || 'Wan2.2\\wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors',
         clipModel: clipModel || 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
-        vaeModel: vaeModel || 'wan_2_1_vae.safetensors',
+        vaeModel: vaeModel || 'wan_2.1_vae.safetensors',
         loraModel: loraModel || 'wan2_2_t2v_lightx2v_4steps_lora.safetensors',
         loraStrength: loraStrength || 1.0,
         width: finalWidth || 512,
@@ -82,7 +82,7 @@ export async function POST(request: NextRequest) {
         negativePrompt,
         highNoiseModel: highNoiseModel || 'Wan2.2\\wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors',
         clipModel: clipModel || 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
-        vaeModel: vaeModel || 'wan_2_1_vae.safetensors',
+        vaeModel: vaeModel || 'wan_2.1_vae.safetensors',
         loraModel: loraModel || 'wan2_2_t2v_lightx2v_4steps_lora.safetensors',
         loraStrength: loraStrength || 1.0,
         width: finalWidth || 512,
@@ -146,6 +146,7 @@ export async function GET(request: NextRequest) {
 
     // Check history for results
     const history = await comfyUIClient.getHistory(promptId)
+    console.log('History for promptId', promptId, ':', JSON.stringify(history, null, 2))
     
     if (!history) {
       return NextResponse.json({
@@ -160,7 +161,11 @@ export async function GET(request: NextRequest) {
       
       // Collect all videos from outputs
       for (const [nodeId, output] of Object.entries(history.outputs)) {
+        console.log(`Processing node ${nodeId} with output:`, JSON.stringify(output, null, 2))
+        
+        // Check for videos (VHS_VideoCombine format)
         if (output.videos) {
+          console.log('Found output.videos:', output.videos)
           for (const video of output.videos) {
             if (action === 'download') {
               // Return video blob for download
@@ -198,6 +203,51 @@ export async function GET(request: NextRequest) {
             }
           }
         }
+        
+        // Check for SaveVideo node outputs (stored in 'images' array for video files)
+        if (output.images && output.animated && output.animated.includes(true)) {
+          console.log('Found SaveVideo output in images array:', output.images)
+          for (const video of output.images) {
+            // Only process if filename indicates it's a video
+            if (video.filename.match(/\.(mp4|avi|mov|webm|mkv)$/i)) {
+              if (action === 'download') {
+                // Return video blob for download
+                const blob = await comfyUIClient.getOutput(
+                  video.filename,
+                  video.subfolder,
+                  video.type
+                )
+                
+                return new NextResponse(blob, {
+                  headers: {
+                    'Content-Type': 'video/mp4',
+                    'Content-Disposition': `attachment; filename="${video.filename}"`
+                  }
+                })
+              } else {
+                // Convert to data URL for preview
+                const blob = await comfyUIClient.getOutput(
+                  video.filename,
+                  video.subfolder,
+                  video.type
+                )
+                
+                // Convert blob to base64 data URL for server-side
+                const arrayBuffer = await blob.arrayBuffer()
+                const buffer = Buffer.from(arrayBuffer)
+                const base64 = buffer.toString('base64')
+                const mimeType = blob.type || 'video/mp4'
+                const dataUrl = `data:${mimeType};base64,${base64}`
+                
+                results.push({
+                  filename: video.filename,
+                  dataUrl
+                })
+              }
+            }
+          }
+        }
+        
         
         // Also check for GIFs as fallback
         if (output.gifs) {
@@ -239,6 +289,12 @@ export async function GET(request: NextRequest) {
         }
       }
 
+      console.log('Returning completed results:', {
+        status: 'completed',
+        videos: results,
+        videoCount: results.length
+      })
+      
       return NextResponse.json({
         status: 'completed',
         videos: results
